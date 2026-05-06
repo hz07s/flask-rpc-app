@@ -1,1 +1,1 @@
-web: gunicorn amqpstorm_threaded_rpc_client:app
+web: gunicorn amqpstorm_threaded_rpc_client:app --bind 0.0.0.0:$PORT
