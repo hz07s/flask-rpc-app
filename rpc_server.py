@@ -1,6 +1,17 @@
 import os
 import amqpstorm
 from amqpstorm import Message
+from urllib.parse import urlparse
+
+# Función para parsear la URL de CloudAMQP
+def parse_amqp_url(url):
+    parsed = urlparse(url)
+    host = parsed.hostname
+    port = parsed.port or 5671 if parsed.scheme == 'amqps' else 5672
+    username = parsed.username
+    password = parsed.password
+    virtual_host = parsed.path[1:] if parsed.path else '/'
+    return host, port, username, password, virtual_host
 
 def on_request(message):
     payload = message.body.decode('utf-8')
@@ -11,16 +22,14 @@ def on_request(message):
     response.publish(routing_key=message.reply_to)
     message.ack()
 
-# Obtener la URL de RabbitMQ desde la variable de entorno (CloudAMQP)
-CLOUDAMQP_URL = os.environ.get('CLOUDAMQP_URL')
-if CLOUDAMQP_URL:
-    connection = amqpstorm.Connection(CLOUDAMQP_URL)
+amqp_url = os.environ.get('CLOUDAMQP_URL')
+if amqp_url:
+    host, port, username, password, virtual_host = parse_amqp_url(amqp_url)
+    connection = amqpstorm.Connection(host, username, password, port=port, virtual_host=virtual_host)
 else:
-    # Fallback para desarrollo local
     connection = amqpstorm.Connection('127.0.0.1', 'guest', 'guest')
 
 channel = connection.channel()
-# Cola durable para compatibilidad con RabbitMQ 4.x
 channel.queue.declare(queue='rpc_queue', durable=True, auto_delete=False, exclusive=False)
 channel.basic.consume(on_request, queue='rpc_queue')
 
