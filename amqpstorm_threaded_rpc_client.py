@@ -2,7 +2,6 @@ import os
 import sys
 import threading
 import uuid
-import subprocess
 from urllib.parse import urlparse
 from flask import Flask
 from amqpstorm import Connection, Message
@@ -22,26 +21,34 @@ def parse_amqp_url(url):
     return host, port, username, password, vhost
 
 # ------------------------------------------------------------
-# 2. Cliente RPC (igual que antes, pero adaptado a URL)
+# 2. Cliente RPC (sin worker interno)
 # ------------------------------------------------------------
 class RpcClient:
     def __init__(self):
         amqp_url = os.environ.get('CLOUDAMQP_URL')
-        if amqp_url:
-            host, port, username, password, vhost = parse_amqp_url(amqp_url)
-            self.connection = Connection(host, username, password,
-                                         port=port, virtual_host=vhost)
-        else:
-            # Modo desarrollo local
-            self.connection = Connection('127.0.0.1', 'guest', 'guest')
-        self.channel = self.connection.channel()
-        result = self.channel.queue.declare(exclusive=True, auto_delete=True)
-        self.callback_queue = result['queue']
-        self.channel.basic.consume(self._on_response, queue=self.callback_queue, no_ack=True)
-        self.queue = {}
-        self.thread = threading.Thread(target=self._start_consuming)
-        self.thread.daemon = True
-        self.thread.start()
+        try:
+            if amqp_url:
+                host, port, username, password, vhost = parse_amqp_url(amqp_url)
+                print(f"Conectando a CloudAMQP: {host}:{port} vhost={vhost}", file=sys.stderr)
+                self.connection = Connection(host, username, password,
+                                             port=port, virtual_host=vhost)
+            else:
+                print("Modo local: conectando a RabbitMQ en 127.0.0.1", file=sys.stderr)
+                self.connection = Connection('127.0.0.1', 'guest', 'guest')
+            self.channel = self.connection.channel()
+            result = self.channel.queue.declare(exclusive=True, auto_delete=True)
+            self.callback_queue = result['queue']
+            self.channel.basic.consume(self._on_response, queue=self.callback_queue, no_ack=True)
+            self.queue = {}
+            self.thread = threading.Thread(target=self._start_consuming)
+            self.thread.daemon = True
+            self.thread.start()
+            print("Cliente RPC inicializado correctamente", file=sys.stderr)
+        except Exception as e:
+            print(f"ERROR FATAL en RpcClient: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            sys.exit(1)
 
     def _start_consuming(self):
         self.channel.start_consuming()
@@ -62,39 +69,31 @@ class RpcClient:
         return corr_id
 
 # ------------------------------------------------------------
-# 3. Worker RPC (se ejecuta en un proceso hijo)
-# ------------------------------------------------------------
-def start_rpc_server():
-    # Lanza rpc_server.py en segundo plano
-    subprocess.Popen([sys.executable, "rpc_server.py"])
-
-# Iniciamos el worker tan pronto como se carga el módulo
-threading.Thread(target=start_rpc_server, daemon=True).start()
-
-# ------------------------------------------------------------
-# 4. Instancia global del cliente RPC
+# 3. Instancia global del cliente RPC
 # ------------------------------------------------------------
 rpc_client = RpcClient()
 
 # ------------------------------------------------------------
-# 5. Ruta de la API
+# 4. Ruta de la API
 # ------------------------------------------------------------
 @app.route('/rpc_call/<payload>')
 def rpc_call(payload):
-    corr_id = rpc_client.send_request(payload)
-    if rpc_client.queue[corr_id]['event'].wait(timeout=10.0):
-        return rpc_client.queue[corr_id]['data']
-    return "Error: timeout", 504
+    try:
+        corr_id = rpc_client.send_request(payload)
+        if rpc_client.queue[corr_id]['event'].wait(timeout=15.0):
+            return rpc_client.queue[corr_id]['data']
+        else:
+            return "Error: timeout - El servidor RPC no respondió", 504
+    except Exception as e:
+        return f"Error interno: {e}", 500
 
 # ------------------------------------------------------------
-# 6. Punto de entrada para Gunicorn (producción) y desarrollo
+# 5. Punto de entrada para Gunicorn
 # ------------------------------------------------------------
 if __name__ == '__main__':
-    # Ejecución local con el servidor de desarrollo de Flask
+    # Modo desarrollo local
     app.run(debug=True, port=5000)
 else:
-    # Cuando Gunicorn importa la aplicación, se ejecuta este bloque.
-    # Aseguramos que el worker esté corriendo (ya se lanzó arriba)
-    # y mostramos un mensaje en los logs de Render.
+    # Modo producción (Gunicorn)
     port = int(os.environ.get('PORT', 10000))
-    print(f"API Flask lista. Escuchando en el puerto {port} (0.0.0.0)", file=sys.stderr)
+    print(f"✅ API Flask lista. Escuchando en 0.0.0.0:{port}", file=sys.stderr)

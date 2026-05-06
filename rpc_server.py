@@ -34,10 +34,11 @@ def on_request(message):
 amqp_url = os.environ.get('CLOUDAMQP_URL')
 if amqp_url:
     host, port, username, password, vhost = parse_amqp_url(amqp_url)
+    print(f"Conectando worker a CloudAMQP: {host}:{port}", file=sys.stderr)
     connection = amqpstorm.Connection(host, username, password,
                                       port=port, virtual_host=vhost)
 else:
-    # Modo desarrollo local
+    print("Modo local: conectando a RabbitMQ en 127.0.0.1", file=sys.stderr)
     connection = amqpstorm.Connection('127.0.0.1', 'guest', 'guest')
 
 channel = connection.channel()
