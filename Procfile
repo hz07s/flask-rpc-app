@@ -1,0 +1,1 @@
+web: gunicorn amqpstorm_threaded_rpc_client:app
